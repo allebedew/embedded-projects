@@ -1,0 +1,65 @@
+
+#include <ESP8266WiFi.h>
+
+const char wu_req[] =
+    "GET /api/" WU_KEY "/conditions/q/" WU_LOC ".json HTTP/1.1\r\n"
+    "User-Agent: ESP8266/0.1\r\n"
+    "Accept: */*\r\n"
+    "Host: " WU_HOST "\r\n"
+    "Connection: close\r\n"
+    "\r\n";
+
+static char respBuf[4096];
+
+void fetchWeather() {
+  Serial.print("Connecting to ");
+  Serial.println(WU_HOST);
+
+  WiFiClient httpclient;
+  if (!httpclient.connect(WU_HOST, 80)) {
+    Serial.println("connection failed");
+    delay(DELAY_ERR);
+    return;
+  }
+
+  httpclient.print(wu_req);
+  httpclient.flush();
+
+  int resp_len = 0;
+  bool skip_headers = true;
+  while (httpclient.connected() || httpclient.available()) {
+    if (skip_headers) {
+      String line = httpclient.readStringUntil('\n');
+      if (line.length() <= 1) {
+        skip_headers = false;
+      }
+    } else {
+      int bytesIn = httpclient.read((uint8_t *)&respBuf[resp_len], sizeof(respBuf) - resp_len);
+      if (bytesIn > 0) {
+        resp_len += bytesIn;
+        if (resp_len > sizeof(respBuf)) resp_len = sizeof(respBuf);
+
+      } else if (bytesIn < 0) {
+
+        Serial.print(F("read error "));
+        Serial.println(bytesIn);
+      }
+    }
+    delay(1);
+  }
+  httpclient.stop();
+
+  if (resp_len >= sizeof(respBuf)) {
+    Serial.print(F("respBuf overflow "));
+    Serial.println(resp_len);
+    delay(DELAY_ERR);
+    return;
+  }
+
+  respBuf[resp_len++] = '\0';
+  Serial.print(F("respLen "));
+  Serial.println(resp_len);
+  Serial.println(respBuf);
+
+
+}

@@ -1,0 +1,13 @@
+{
+    "terminal.integrated.env.osx": {
+        "PATH": "/Users/alex/.platformio/penv/bin:/Users/alex/.platformio/penv:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Wireshark.app/Contents/MacOS:/Users/alex/.platformio/penv/bin:/Users/alex/Desktop/MCU/esp/xtensa-esp32-elf/bin",
+        "PLATFORMIO_CALLER": "vscode"
+    },
+    "files.associations": {
+        "array": "cpp",
+        "initializer_list": "cpp",
+        "deque": "cpp",
+        "unordered_map": "cpp",
+        "vector": "cpp"
+    }
+}
