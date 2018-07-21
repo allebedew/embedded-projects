@@ -5,15 +5,14 @@
 #include <WiFiUdp.h>
 #include <BlynkSimpleEsp8266.h>
 
-#define BLYNK_PRINT Serial
+#define BLYNK_PRINT     Serial
 
-#define BLK_RSSID   V11
-#define BLK_WTR     V12
-#define BLK_OVRD    V13
+#define BLK_RSSID       V11
+#define BLK_WTR_REL     V12
+#define BLK_STRT        V13
+#define BLK_WTR_LEFT    V14
 
-#define PIN_WTR     D5
-
-#define WATER_TIME  (60 * 60000)
+#define PIN_WTR         D0
 
 char auth[] = "406c847c32a54c3f83cba0dc37dccbe2";
 
@@ -21,15 +20,24 @@ char auth[] = "406c847c32a54c3f83cba0dc37dccbe2";
 LiquidCrystal_I2C lcd(0x3F, 16, 2);
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3*60*60);
+WidgetLED water_led(BLK_WTR_REL);
+
+// VARS
+
+const uint8_t start_hour = 19;
+const unsigned long water_duration = 30 * 60 * 1000;
+
+unsigned long water_on_millis = 0;
+unsigned long water_complete_millis = 0;
+bool water_on = false;
 
 void loop100ms();
 void loop1s();
 void loop10s();
-void checkWateringStatus();
+void checkTimings();
 void updateRelay();
 void updateDisplay();
-void startWatering();
-void stopWatering();
+void updateBlink();
 
 void setup() {
     Serial.begin(9600);
@@ -56,9 +64,9 @@ void loop() {
         loop100ms();
         last_upd1 = millis();
     }
-    if (millis() - last_upd1 > 1000) {
+    if (millis() - last_upd2 > 1000) {
         loop1s();
-        last_upd1 = millis();
+        last_upd2 = millis();
     }
     if (millis() - last_upd3 > 10000) {
         loop10s();
@@ -75,64 +83,73 @@ void loop100ms() {
         timeClient.update();
     }
 
-    checkWateringStatus();
+    checkTimings();
     updateRelay();
     updateDisplay();
 }
 
 void loop1s() {
+    if (water_on) {
+        updateBlink();
+    }
 }
 
 void loop10s() {
-    Blynk.virtualWrite(BLK_RSSID, WiFi.RSSI());
-    Blynk.virtualWrite(BLK_WTR, digitalRead(PIN_WTR));
+    if (!water_on) {
+        updateBlink();
+    }
 }
-
-// VARS
-
-unsigned long last_time_trigger = 0;
-unsigned long water_on_millis = 0;
-bool water_override = false;
-bool water_on = false;
 
 // BLYNK
 
-BLYNK_WRITE(BLK_OVRD) {
-    water_override = param.asInt() > 0;
+BLYNK_WRITE(BLK_STRT) {
+    if (param.asInt() > 0) {
+
+        water_on = true;
+        water_on_millis = millis();
+
+    } else {
+
+        water_on = false;
+        water_complete_millis = millis();
+
+    }
     updateRelay();
 }
 
 // MAIN LOGIC
 
-void updateRelay() {
-    digitalWrite(PIN_WTR, !(water_on || water_override));
-    Blynk.virtualWrite(BLK_WTR, digitalRead(PIN_WTR) == LOW);
-}
+void checkTimings() {
+    if (!water_on &&
+        timeClient.getHours() == start_hour && 
+        timeClient.getMinutes() == 0 &&
+        millis() - water_complete_millis > water_duration) {
 
-void checkWateringStatus() {
+        // start watering
+        water_on = true;
+        water_on_millis = millis();
+        Blynk.virtualWrite(BLK_STRT, 1);
+        Blynk.notify("Starting watering :)");
+    }
 
-    
+    if (water_on && millis() - water_on_millis > water_duration) {
 
-
-}
-
-void checkOffTrigger() {
-    if (water_on && (millis() - water_on_millis) > WATER_TIME) {
-        stopWatering();
+        // stop watering
+        water_on = false;
+        water_complete_millis = millis();
+        Blynk.virtualWrite(BLK_STRT, 0);
+        Blynk.notify("Watering finished");
     }
 }
 
-void startWatering() {
-    if (water_on) return;
-
-    water_on = true;
-    water_on_millis = millis();
-}
-
-void stopWatering() {
-    if (!water_on) return;
-
-    water_on = false;
+void updateRelay() {
+    uint8_t relay = water_on ? LOW : HIGH;
+    if (digitalRead(PIN_WTR) != relay) {
+        Serial.print("Switching relay ");
+        Serial.println(relay == LOW ? "ON" : "OFF");
+        digitalWrite(PIN_WTR, relay);
+        updateBlink();
+    }
 }
 
 // ============================
@@ -173,11 +190,28 @@ void updateDisplay() {
     lcd.printf("%2.1d:%2.2d:%2.2d", timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds());
 
     lcd.setCursor(0, 1);
-    if (water_override) {
-        lcd.printf("Water Override    ");
-    } else if (water_on) {
-        lcd.printf("Water On %d min   ", (WATER_TIME - (millis() - water_on_millis)) / 60000);
+    if (water_on) {
+        int sec_total = (water_duration - (millis() - water_on_millis)) / 1000;
+        int sec = sec_total % 60;
+        int min = sec_total / 60;
+        lcd.printf("Water On %d:%.2d", min, sec);
     } else {
         lcd.printf("Water Off         ");
+    }
+}
+
+void updateBlink() {
+    Blynk.virtualWrite(BLK_RSSID, WiFi.RSSI());
+    bool is_on = digitalRead(PIN_WTR) == LOW;
+    if (is_on) {
+        water_led.on();
+    } else {
+        water_led.off();
+    }
+    if (water_on) {
+        int sec_total = (water_duration - (millis() - water_on_millis)) / 1000;
+        Blynk.virtualWrite(BLK_WTR_LEFT, sec_total);
+    } else {
+        Blynk.virtualWrite(BLK_WTR_LEFT, 0);
     }
 }
