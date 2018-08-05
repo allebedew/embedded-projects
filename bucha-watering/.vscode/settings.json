@@ -8,6 +8,8 @@
         "initializer_list": "cpp",
         "deque": "cpp",
         "unordered_map": "cpp",
-        "vector": "cpp"
+        "vector": "cpp",
+        "list": "cpp",
+        "unordered_set": "cpp"
     }
 }

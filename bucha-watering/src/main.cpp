@@ -4,6 +4,9 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <BlynkSimpleEsp8266.h>
+#include <EEPROM.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
 
 #define BLYNK_PRINT     Serial
 
@@ -11,6 +14,13 @@
 #define BLK_WTR_REL     V12
 #define BLK_STRT        V13
 #define BLK_WTR_LEFT    V14
+#define BLK_START_HR    V15
+#define BLK_DURATION_M  V16
+#define BLK_ENABLED     V17
+
+#define MEM_ENABLED     0x00
+#define MEM_DURATION_M  0x01
+#define MEM_START_HR    0x02
 
 #define PIN_WTR         D0
 
@@ -24,20 +34,24 @@ WidgetLED water_led(BLK_WTR_REL);
 
 // VARS
 
-const uint8_t start_hour = 19;
-const unsigned long water_duration = 30 * 60 * 1000;
+String overTheAirURL;
 
+uint8_t start_hour = 19;
+uint8_t water_duration_min = 30;
 unsigned long water_on_millis = 0;
 unsigned long water_complete_millis = 0;
 bool water_on = false;
+bool enabled = true;
 
 void loop100ms();
 void loop1s();
 void loop10s();
+unsigned long getWaterDuration();
 void checkTimings();
 void updateRelay();
 void updateDisplay();
 void updateBlink();
+void blynkStartup();
 
 void setup() {
     Serial.begin(9600);
@@ -47,6 +61,11 @@ void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(PIN_WTR, OUTPUT);
     digitalWrite(PIN_WTR, HIGH);
+
+    EEPROM.begin(512);
+    water_duration_min = EEPROM.read(MEM_DURATION_M);
+    start_hour = EEPROM.read(MEM_START_HR);
+    enabled = EEPROM.read(MEM_ENABLED) >= 1;
 
     lcd.init();
     lcd.backlight();
@@ -79,6 +98,7 @@ void loop100ms() {
     if (WiFi.status() == WL_CONNECTED) {
         if (!Blynk.connected()) {
             Blynk.connect();
+            blynkStartup();
         }
         timeClient.update();
     }
@@ -104,26 +124,48 @@ void loop10s() {
 
 BLYNK_WRITE(BLK_STRT) {
     if (param.asInt() > 0) {
-
         water_on = true;
         water_on_millis = millis();
-
     } else {
-
         water_on = false;
         water_complete_millis = millis();
-
     }
     updateRelay();
+}
+
+BLYNK_WRITE(BLK_DURATION_M) {
+    water_duration_min = param.asInt();
+    EEPROM.write(MEM_DURATION_M, water_duration_min);
+    EEPROM.commit();
+}
+
+BLYNK_WRITE(BLK_START_HR) {
+    start_hour = param.asInt();
+    EEPROM.write(MEM_START_HR, start_hour);
+    EEPROM.commit();
+}
+
+BLYNK_WRITE(BLK_ENABLED) {
+    enabled = param.asInt() >= 1;
+    EEPROM.write(MEM_ENABLED, enabled ? 1 : 0);
+    EEPROM.commit();
+}
+
+void blynkStartup() {
+    Blynk.virtualWrite(BLK_ENABLED, enabled ? 1 : 0);
+    Blynk.virtualWrite(BLK_DURATION_M, water_duration_min);
+    Blynk.virtualWrite(BLK_START_HR, start_hour);
+    Blynk.notify("Watering system online!");
 }
 
 // MAIN LOGIC
 
 void checkTimings() {
-    if (!water_on &&
+    if (enabled &&
+        !water_on &&
         timeClient.getHours() == start_hour && 
         timeClient.getMinutes() == 0 &&
-        millis() - water_complete_millis > water_duration) {
+        millis() - water_complete_millis > (60 * 1000)) {
 
         // start watering
         water_on = true;
@@ -132,7 +174,8 @@ void checkTimings() {
         Blynk.notify("Starting watering :)");
     }
 
-    if (water_on && millis() - water_on_millis > water_duration) {
+    if (water_on && 
+        millis() - water_on_millis > getWaterDuration()) {
 
         // stop watering
         water_on = false;
@@ -153,6 +196,10 @@ void updateRelay() {
 }
 
 // ============================
+
+unsigned long getWaterDuration() {
+    return water_duration_min * 60 * 1000;
+}
 
 void updateDisplay() {
 
@@ -190,13 +237,17 @@ void updateDisplay() {
     lcd.printf("%2.1d:%2.2d:%2.2d", timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds());
 
     lcd.setCursor(0, 1);
-    if (water_on) {
-        int sec_total = (water_duration - (millis() - water_on_millis)) / 1000;
-        int sec = sec_total % 60;
-        int min = sec_total / 60;
-        lcd.printf("Water On %d:%.2d", min, sec);
+    if (enabled) {
+        if (water_on) {
+            int sec_total = (getWaterDuration() - (millis() - water_on_millis)) / 1000;
+            int sec = sec_total % 60;
+            int min = sec_total / 60;
+            lcd.printf("Watering   %.2d:%.2d", min, sec);
+        } else {
+            lcd.printf("Standby %.2dh/%.3dm", start_hour, water_duration_min);
+        }        
     } else {
-        lcd.printf("Water Off         ");
+        lcd.printf("Disabled        ");
     }
 }
 
@@ -209,9 +260,13 @@ void updateBlink() {
         water_led.off();
     }
     if (water_on) {
-        int sec_total = (water_duration - (millis() - water_on_millis)) / 1000;
-        Blynk.virtualWrite(BLK_WTR_LEFT, sec_total);
+        char buf[6];
+        int sec_total = (getWaterDuration() - (millis() - water_on_millis)) / 1000;
+        int sec = sec_total % 60;
+        int min = sec_total / 60;
+        sprintf(buf, "%d:%.2d", min, sec);
+        Blynk.virtualWrite(BLK_WTR_LEFT, buf);
     } else {
-        Blynk.virtualWrite(BLK_WTR_LEFT, 0);
+        Blynk.virtualWrite(BLK_WTR_LEFT, " ");
     }
 }
